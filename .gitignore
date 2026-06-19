@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.venv/
+venv/
+
+# Local chain data (genesis.json + blocks.jsonl live in a data dir you name)
+chain/
+chaindata/
+data/
+_*/
+*_test*/

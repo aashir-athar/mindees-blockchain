@@ -1,0 +1,4 @@
+# Mindees runtime dependency (the only one). Everything else is the Python stdlib.
+cryptography>=42
+
+# Dev-only (static-analysis gate): pip install ruff

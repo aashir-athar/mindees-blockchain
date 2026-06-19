@@ -1,0 +1,7 @@
+# Mindees static-analysis gate (free, open-source: ruff).
+# E/F/W = pycodestyle + pyflakes, B = flake8-bugbear (real bug patterns).
+line-length = 120
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "W", "B"]
