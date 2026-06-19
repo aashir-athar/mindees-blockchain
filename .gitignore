@@ -17,3 +17,7 @@ mainnet/
 mainnet-keys/
 testnet_data/
 *.json.keystore
+
+# Scratch / reproduction files
+_*.py
+!__init__.py
