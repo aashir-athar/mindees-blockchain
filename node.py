@@ -18,7 +18,9 @@ Self-testing: run directly ->  python node.py
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
+import os
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -142,15 +144,28 @@ class NodeService:
 # --------------------------------------------------------------------------- #
 # JSON-RPC over HTTP
 # --------------------------------------------------------------------------- #
+_WRITE_METHODS = {"submit_tx", "receive_block"}  # state-changing -> require auth when a token is set
+_MAX_RPC_BODY = 8_000_000
+
+
 class _RPCHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         request_id = None
         try:
             length = int(self.headers.get("Content-Length") or 0)
+            if length > _MAX_RPC_BODY:
+                self._reply({"id": None, "error": "request too large"})
+                return
             req = json.loads(self.rfile.read(length) or b"{}")
             request_id = req.get("id")
-            result = self.server.dispatch(req["method"], req.get("params") or {})
-            self._reply({"id": request_id, "result": result})
+            method = req["method"]
+            if method in _WRITE_METHODS and self.server.rpc_token:
+                auth = self.headers.get("Authorization", "")
+                token = auth[7:] if auth.startswith("Bearer ") else ""
+                if not hmac.compare_digest(token, self.server.rpc_token):
+                    self._reply({"id": request_id, "error": "unauthorized"})
+                    return
+            self._reply({"id": request_id, "result": self.server.dispatch(method, req.get("params") or {})})
         except Exception as exc:  # any failure -> JSON error, never a 500 stack trace
             self._reply({"id": request_id, "error": str(exc)})
 
@@ -170,9 +185,12 @@ class JSONRPCServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, service: NodeService, host: str = "127.0.0.1", port: int = 0):
+    def __init__(self, service: NodeService, host: str = "127.0.0.1", port: int = 0, token=None):
         super().__init__((host, port), _RPCHandler)
         self.service = service
+        self.rpc_token = token  # if set, write methods require a matching Bearer token
+        # NOTE: produce_block is intentionally NOT exposed over RPC -- block production is
+        # driven only by the internal validator loop, so no client can mint out of turn / MEV.
         self.methods = {
             "info": service.info,
             "balance": service.balance,
@@ -182,7 +200,6 @@ class JSONRPCServer(ThreadingHTTPServer):
             "locked": service.locked,
             "get_block": service.get_block,
             "submit_tx": service.submit_tx,
-            "produce_block": service.produce_block,
             "receive_block": service.receive_block,
         }
 
@@ -193,9 +210,12 @@ class JSONRPCServer(ThreadingHTTPServer):
         return fn(params)
 
 
-def rpc_call(url: str, method: str, **params):
+def rpc_call(url: str, method: str, token=None, **params):
     body = json.dumps({"method": method, "params": params, "id": 1}).encode()
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=body, headers=headers)
     with urllib.request.urlopen(req, timeout=5) as resp:
         payload = json.loads(resp.read().decode())
     if payload.get("error"):
@@ -220,7 +240,9 @@ def _cli(argv=None) -> None:
     p_serve.add_argument("--data", required=True)
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8645)
-    p_serve.add_argument("--validator-secret", default=None, help="hex secret to produce blocks")
+    p_serve.add_argument("--validator-secret", default=None, help="hex secret (prefer --validator-keystore)")
+    p_serve.add_argument("--validator-keystore", default=None,
+                         help="encrypted validator keystore ($MINDEES_PASSPHRASE)")
     p_serve.add_argument("--autoproduce", action="store_true", help="mine a block on each tx")
 
     args = parser.parse_args(argv)
@@ -239,11 +261,26 @@ def _cli(argv=None) -> None:
 
     if args.cmd == "serve":
         store = BlockStore(args.data)
-        validator = Wallet.from_secret(int(args.validator_secret, 16)) if args.validator_secret else None
+        secret = args.validator_secret
+        if args.validator_keystore:
+            from keystore import decrypt_secret, load_keystore
+            passphrase = os.environ.get("MINDEES_PASSPHRASE")
+            if not passphrase:
+                raise SystemExit("set $MINDEES_PASSPHRASE to unlock the validator keystore")
+            secret = decrypt_secret(load_keystore(args.validator_keystore), passphrase)
+        validator = Wallet.from_secret(int(secret, 16)) if secret else None
+
+        token = os.environ.get("MINDEES_RPC_TOKEN")
+        # A reachable RPC with no auth token would let anyone submit txs / push blocks.
+        is_loopback = args.host in ("127.0.0.1", "localhost", "::1")
+        if not is_loopback and not token:
+            raise SystemExit("refusing to serve a non-loopback RPC without $MINDEES_RPC_TOKEN")
+
         service = NodeService(store, validator, autoproduce=args.autoproduce)
-        server = JSONRPCServer(service, args.host, args.port)
+        server = JSONRPCServer(service, args.host, args.port, token=token)
         info = service.info()
-        print(f"{NAME} node serving on http://{args.host}:{args.port}/  height={info['height']}")
+        print(f"{NAME} node serving on http://{args.host}:{args.port}/  height={info['height']}  "
+              f"auth={'on' if token else 'off (loopback)'}")
         if validator:
             print(f"  validator={validator.address} autoproduce={args.autoproduce}")
         server.serve_forever()
@@ -290,8 +327,14 @@ def _demo() -> None:
         res = rpc_call(url, "submit_tx", tx=encode_tx(tx))
         assert res["txid"] == tx.txid
 
-        # The validator produces a block; the transfer settles.
-        block = rpc_call(url, "produce_block", timestamp=1_700_000_010)
+        # produce_block is NOT an RPC method (production is internal-only) -> client can't mint.
+        try:
+            rpc_call(url, "produce_block", timestamp=1)
+            raise AssertionError("produce_block must not be exposed over RPC")
+        except RuntimeError:
+            pass
+        # The validator produces a block internally; the transfer settles.
+        block = service.produce_block({"timestamp": 1_700_000_010})
         assert block["index"] == 1
         assert rpc_call(url, "balance", address=bob.address) == 100 * COIN
         assert rpc_call(url, "info")["supply"] == MAX_SUPPLY_UNITS
@@ -337,6 +380,33 @@ def _demo() -> None:
             raise AssertionError("non-elected node should not produce a block")
         except ValidationError:
             pass
+
+        # RPC auth: a token-protected server rejects an unauthenticated write, accepts the read.
+        tmp3 = tempfile.mkdtemp(prefix="mindees_auth_")
+        auth_server = None
+        try:
+            s3 = BlockStore(tmp3)
+            s3.write_genesis(
+                allocations={alice.address: MAX_SUPPLY_UNITS - 1000 * COIN, v1.address: 1000 * COIN},
+                initial_stakes={v1.address: 1000 * COIN}, timestamp=1_700_000_000,
+            )
+            auth_server = JSONRPCServer(NodeService(s3), token="sekret")
+            ahost, aport = auth_server.server_address
+            aurl = f"http://{ahost}:{aport}/"
+            threading.Thread(target=auth_server.serve_forever, daemon=True).start()
+            t2 = Transaction(alice.address, bob.address, 1 * COIN, 0, 0).sign(alice)
+            try:
+                rpc_call(aurl, "submit_tx", tx=encode_tx(t2))           # no token
+                raise AssertionError("write without token must be unauthorized")
+            except RuntimeError:
+                pass
+            assert rpc_call(aurl, "info")["height"] == 0                # reads need no token
+            assert rpc_call(aurl, "submit_tx", token="sekret", tx=encode_tx(t2))["txid"] == t2.txid
+        finally:
+            if auth_server is not None:
+                auth_server.shutdown()
+                auth_server.server_close()
+            shutil.rmtree(tmp3, ignore_errors=True)
 
         print("ALL CHECKS PASSED")
         print("  node daemon: JSON-RPC read/write, validator-gated production, persisted")

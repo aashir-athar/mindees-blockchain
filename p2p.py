@@ -35,6 +35,7 @@ _SEEN_CAP = 100_000   # bound de-dup memory (DoS): forget the oldest beyond this
 _MAX_PEERS = 256      # bound the peer table (DoS): ignore new peers beyond this
 _MAX_ORPHANS = 5_000  # bound buffered out-of-order blocks (DoS)
 _MAX_MSG_BYTES = 4_000_000  # reject oversize gossip lines (DoS)
+_MAX_SYNC_BATCH = 1_000  # blocks per get_blocks response; requester pages by re-asking
 
 
 def _block_wire_id(block) -> str:
@@ -60,7 +61,7 @@ class _Handler(socketserver.StreamRequestHandler):
             msg = json.loads(line.decode())
             if not isinstance(msg, dict):
                 return
-            self.server.p2p._on_message(msg)  # type: ignore[attr-defined]
+            self.server.p2p._on_message(msg, self.client_address[0])  # type: ignore[attr-defined]
         except (ValueError, KeyError, TypeError, ValidationError, OSError):
             return
 
@@ -184,7 +185,7 @@ class P2PNode:
             return None
         return self.produce_and_gossip(timestamp)
 
-    def _on_message(self, msg: dict) -> None:
+    def _on_message(self, msg: dict, client_ip=None) -> None:
         kind = msg.get("type")
         if kind == "hello":
             self._learn_peers(msg)
@@ -205,7 +206,7 @@ class P2PNode:
                 return
             self._apply_or_buffer(block, msg["data"])
         elif kind == "get_blocks":
-            self._serve_blocks(msg)
+            self._serve_blocks(msg, client_ip)
 
     # -- block sync (late joiners) ----------------------------------------- #
     def request_sync(self) -> None:
@@ -216,18 +217,29 @@ class P2PNode:
             "reply": self.advertise,
         })
 
-    def _serve_blocks(self, msg: dict) -> None:
+    def _serve_blocks(self, msg: dict, client_ip=None) -> None:
         reply = msg.get("reply", "")
         host, sep, port = reply.rpartition(":")
         if not sep or not port.isdigit():
             return
+        # Anti-reflection: only ever send blocks back to the IP that asked, never to an
+        # attacker-chosen third party. (client_ip is the real source of this connection.)
+        if client_ip is not None and host != client_ip:
+            return
         since = msg.get("since", 0)
-        # Send our canonical blocks above `since`, in order, to the requester.
+        if not isinstance(since, int):
+            return
+        # Send our canonical blocks above `since`, in order, capped per response (the
+        # requester pages by re-asking with a higher `since`).
+        sent = 0
         for block in self.service.tree.canonical.chain:
             if block.index > since:
                 try:
                     tcp_send(host, int(port), {"type": "block", "data": encode_block(block)})
                 except OSError:
+                    return
+                sent += 1
+                if sent >= _MAX_SYNC_BATCH:
                     return
 
     def _apply_or_buffer(self, block, data: dict) -> None:
