@@ -64,16 +64,17 @@ Use a real reachable address with `--advertise`, and unlock the validator key fr
 manager — not a literal secret.
 
 ```bash
-# validator/seed node
-MINDEES_PASSPHRASE=... python p2p.py serve \
+# validator/seed node -- unlock the key from an encrypted keystore, never a raw secret
+export MINDEES_PASSPHRASE=...   # from your secrets manager, not your shell history
+python p2p.py serve \
   --data ./mainnet --port 9000 --advertise <PUBLIC_HOST>:9000 \
-  --validator-secret <FROM_SECRETS_MANAGER> \
+  --validator-keystore validator1.json \
   --peer seed1.example:9000 --peer seed2.example:9000 --slot <SECONDS>
 ```
 
 Run several geographically separate seed nodes so the network can bootstrap and survive a host
-loss. (Note: `--validator-secret` currently takes a hex secret; wire it from your secrets manager,
-and prefer adding keystore-unlock to `p2p.py serve` before mainnet.)
+loss. `--advertise` is the address peers will dial you back on (your public host), and
+`--validator-keystore` keeps the secret encrypted at rest and off the command line.
 
 ### 4. Publish the genesis bundle
 So anyone can join and verify:

@@ -22,10 +22,12 @@ Run directly ->  python p2p.py
 from __future__ import annotations
 
 import json
+import os
 import socketserver
 import threading
 import time
 
+from consensus import vote_tx
 from core import ValidationError
 from network import decode_block, decode_tx, encode_block, encode_tx, tcp_send
 
@@ -62,6 +64,7 @@ class P2PNode:
         self.seen_tx: dict = {}
         self.seen_block: dict = {}
         self.orphans: dict = {}  # previous_hash -> [block wire dicts] awaiting their parent
+        self._voted_targets: set = set()  # checkpoint heights we've already voted -> no double-vote
         self.server = _Server(self, host, port)
         self.host, self.port = self.server.server_address
         # The dialable address this node announces to others. For a real deploy pass a
@@ -111,6 +114,41 @@ class P2PNode:
             peer = (host, int(port))
             if peer not in self.peers and len(self.peers) < _MAX_PEERS:
                 self.peers.append(peer)
+
+    def auto_vote(self) -> None:
+        """Cast a finality vote for the latest checkpoint, driving finality forward.
+
+        Fault-free by construction: we vote at most once per target HEIGHT (no double vote),
+        and the source is the highest justified checkpoint which only rises (no surround vote),
+        so an honest auto-voter can never slash itself even across transient forks.
+        """
+        v = self.service.validator
+        if v is None:
+            return
+        chain = self.service.chain
+        if v.address not in chain.stakes:
+            return
+        epoch = chain.epoch
+        target = next((b for b in reversed(chain.chain)
+                       if b.index > 0 and b.index % epoch == 0), None)
+        if target is None or target.index in self._voted_targets:
+            return
+        # Source = highest justified checkpoint strictly below the target (defaults to finalized).
+        src_hash, src_height = chain.finalized
+        for b in chain.chain:
+            if (b.index < target.index and b.index % epoch == 0
+                    and b.hash in chain.justified and b.index >= src_height):
+                src_hash, src_height = b.hash, b.index
+        if src_height >= target.index:
+            return
+        # Nonce accounts for our votes already waiting in the mempool.
+        pending = sum(1 for t in self.service.mempool.pool.values() if t.sender == v.address)
+        nonce = chain.nonces.get(v.address, 0) + pending
+        try:
+            self.submit_tx(vote_tx(v, src_hash, src_height, target.hash, target.index, nonce))
+            self._voted_targets.add(target.index)
+        except ValidationError:
+            pass
 
     def tick(self, timestamp: int = 0):
         """Produce + gossip the next block IFF this node is the elected validator.
@@ -336,7 +374,7 @@ def _demo_autonomous() -> None:
         store.write_genesis(
             allocations={alice.address: MAX_SUPPLY_UNITS - 3 * stake, **{v.address: stake for v in vs}},
             initial_stakes={v.address: stake for v in vs},
-            timestamp=1_700_000_000,
+            timestamp=1_700_000_000, epoch=2,  # short epoch so finality advances quickly here
         )
         return store
 
@@ -352,21 +390,26 @@ def _demo_autonomous() -> None:
                 if m is not n:
                     n.connect(m.host, m.port)
 
-        # Run slots: each node ticks, the elected validator produces, the rest relay.
-        for h in range(1, 7):
+        # Run slots: the elected validator produces; everyone votes; the rest relay.
+        for h in range(1, 13):
             for n in nodes:
                 n.tick(timestamp=1_700_000_000 + h)
-            assert _wait_for(lambda h=h: all(x.service.chain.head.index == h for x in nodes)), \
-                f"network failed to converge at height {h}"
+            assert _wait_for(lambda h=h: all(x.service.chain.head.index >= h for x in nodes)), \
+                f"network failed to advance to height {h}"
+            for n in nodes:
+                n.auto_vote()
 
+        assert _wait_for(lambda: all(x.service.tree.finalized_height > 0 for x in nodes)), \
+            "finality did not advance autonomously"
         heads = {n.service.chain.head.hash for n in nodes}
         assert len(heads) == 1  # all three agree on the head
         for n in nodes:
             assert n.service.chain.total_supply() == MAX_SUPPLY_UNITS
 
+        fh = nodes[0].service.tree.finalized_height
         print("ALL CHECKS PASSED")
-        print("  autonomous: 3 validators self-produce on a slot tick, mesh stays converged")
-        print(f"  height {nodes[0].service.chain.head.index}, one agreed head, supply intact")
+        print("  autonomous: 3 validators self-produce AND self-vote on a slot tick")
+        print(f"  height {nodes[0].service.chain.head.index}, finalized through height {fh}, supply intact")
     finally:
         for n in nodes:
             n.stop()
@@ -392,25 +435,39 @@ def _cli(argv=None) -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=9000)
     p.add_argument("--validator-secret", default=None, help="hex secret to produce blocks")
+    p.add_argument("--validator-keystore", default=None,
+                   help="encrypted validator keystore ($MINDEES_PASSPHRASE) -- preferred over a raw secret")
+    p.add_argument("--advertise", default=None, help="dialable host:port to announce (default: bind address)")
     p.add_argument("--peer", action="append", default=[], help="peer host:port (repeatable)")
     p.add_argument("--slot", type=float, default=2.0, help="seconds between production ticks")
     args = parser.parse_args(argv)
 
     from core import Wallet
 
-    validator = Wallet.from_secret(int(args.validator_secret, 16)) if args.validator_secret else None
-    node = P2PNode(NodeService(BlockStore(args.data), validator), args.host, args.port)
+    # Prefer an encrypted keystore: the validator secret is never on the command line or in env.
+    secret = args.validator_secret
+    if args.validator_keystore:
+        from keystore import decrypt_secret, load_keystore
+        passphrase = os.environ.get("MINDEES_PASSPHRASE")
+        if not passphrase:
+            raise SystemExit("set $MINDEES_PASSPHRASE to unlock the validator keystore")
+        secret = decrypt_secret(load_keystore(args.validator_keystore), passphrase)
+
+    validator = Wallet.from_secret(int(secret, 16)) if secret else None
+    node = P2PNode(NodeService(BlockStore(args.data), validator), args.host, args.port,
+                   advertise=args.advertise or "")
     node.start()
     for spec in args.peer:
         host, _, port = spec.rpartition(":")
         node.connect(host, int(port))
-    print(f"Mindees node on {node.host}:{node.port}  peers={args.peer}  "
+    print(f"Mindees node on {node.host}:{node.port}  advertise={node.advertise}  peers={args.peer}  "
           f"validator={'yes' if validator else 'no'}  height={node.service.chain.head.index}")
     try:
         while True:
             node.announce()                  # gossip peers so the mesh self-forms
             node.request_sync()               # catch up if we are behind
             node.tick(int(time.time()))       # produce a block if it is our turn
+            node.auto_vote()                  # vote for the latest checkpoint -> drives finality
             time.sleep(args.slot)
     except KeyboardInterrupt:
         node.stop()

@@ -11,3 +11,9 @@ chaindata/
 data/
 _*/
 *_test*/
+
+# Launch artifacts: keystores hold secrets and a genesis must use YOUR own keys.
+mainnet/
+mainnet-keys/
+testnet_data/
+*.json.keystore
