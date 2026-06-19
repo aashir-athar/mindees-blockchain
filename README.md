@@ -1,5 +1,7 @@
 # Mindees (MIND)
 
+[![CI](https://github.com/aashir-athar/mindees-blockchain/actions/workflows/ci.yml/badge.svg)](https://github.com/aashir-athar/mindees-blockchain/actions/workflows/ci.yml)
+
 A from-scratch Proof-of-Stake Layer-1 cryptocurrency, built in pure Python with one
 dependency (`cryptography`). Fixed supply of **exactly 1,000,000 MIND**, minted once at
 genesis — zero inflation, ever.
@@ -36,6 +38,16 @@ export MINDEES_PASSPHRASE='correct horse battery staple'
 python wallet.py keygen --out founder.json
 python wallet.py send <TO_ADDRESS> 100 --keystore founder.json --mine
 ```
+
+## Run a network
+
+```bash
+python run_testnet.py            # local: 1 validator + 2 followers, one command
+python run_testnet.py --check    # launch briefly, assert the nodes converge, exit
+docker compose up --build        # containerised 3-node testnet
+```
+
+See [DEPLOY.md](DEPLOY.md) for multi-host deployment, key handling, and the mainnet caveat.
 
 ## Architecture
 

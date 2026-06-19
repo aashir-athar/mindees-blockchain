@@ -1,0 +1,44 @@
+# A 3-node Mindees testnet: one validator (node1) + two followers, gossiping over the
+# Docker network. All three derive the same genesis from MINDEES_GENESIS_TO, so they agree.
+#
+#   docker compose up --build
+#
+# TEST KEYS ONLY. MINDEES_VALIDATOR_SECRET "1" is the trivial key Wallet.from_secret(1)
+# (address 12Qew9628up4XwNAGWsP66GfaBhibCjqaQ). NEVER use a literal secret in production --
+# use an encrypted keystore + a real secrets manager, and a real validator key.
+
+x-genesis: &genesis "12Qew9628up4XwNAGWsP66GfaBhibCjqaQ"
+
+services:
+  node1:                       # the validator
+    build: .
+    environment:
+      MINDEES_GENESIS_TO: *genesis
+      MINDEES_VALIDATOR_SECRET: "1"
+      MINDEES_PORT: "9000"
+      MINDEES_SLOT: "2"
+      MINDEES_PEERS: "node2:9000 node3:9000"
+    volumes: ["node1-data:/data"]
+
+  node2:                       # follower
+    build: .
+    environment:
+      MINDEES_GENESIS_TO: *genesis
+      MINDEES_PORT: "9000"
+      MINDEES_PEERS: "node1:9000 node3:9000"
+    volumes: ["node2-data:/data"]
+    depends_on: [node1]
+
+  node3:                       # follower
+    build: .
+    environment:
+      MINDEES_GENESIS_TO: *genesis
+      MINDEES_PORT: "9000"
+      MINDEES_PEERS: "node1:9000 node2:9000"
+    volumes: ["node3-data:/data"]
+    depends_on: [node1]
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
