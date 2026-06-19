@@ -30,6 +30,15 @@ from consensus import ProofOfStakeChain
 from core import Block, ValidationError
 
 
+class ConflictingFinalityError(ValidationError):
+    """Raised when a branch finalizes a checkpoint conflicting with the established one.
+
+    This is an attributable safety fault (>=1/3 of source stake must have double/surround
+    voted). The node halts ingestion for operator weak-subjectivity recovery rather than
+    silently latching a per-node fork.
+    """
+
+
 class BlockTree:
     def __init__(self, allocations, initial_stakes=None, timestamp=0, vesting=None,
                  unbonding_blocks=0, treasury_address=None, epoch=32):
@@ -104,6 +113,16 @@ class BlockTree:
         # head, so the head scan filters against the current frontier.
         fh, fhgt = parent_chain.finalized_checkpoint()
         if fhgt > self.finalized_height:
+            # Safety backstop: the new finalized checkpoint MUST extend the current one. If
+            # this branch finalized something that conflicts with our finalized prefix, that
+            # is an attributable >=1/3 stake fault -- halt loudly rather than silently fork.
+            branch = parent_chain.chain
+            if (self.finalized_height < len(branch)
+                    and branch[self.finalized_height].hash != self.finalized_hash):
+                raise ConflictingFinalityError(
+                    f"conflicting finality: branch finalized {fh}@{fhgt} but "
+                    f"{self.finalized_hash}@{self.finalized_height} is already final"
+                )
             self.finalized_hash, self.finalized_height = fh, fhgt
         self._update_head()
         return True

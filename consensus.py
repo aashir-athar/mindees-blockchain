@@ -318,6 +318,10 @@ class ProofOfStakeChain(Blockchain):
                 balances[tx.sender] += tx.amount  # legacy instant unstake
             balances[block.validator] = balances.get(block.validator, 0) + tx.fee
             if stakes[tx.sender] == 0:
+                # Liveness: never let a voluntary exit empty the validator set (which would
+                # halt the chain with no electable proposer). The last validator must stay.
+                if len(stakes) <= 1:
+                    raise ValidationError("cannot unstake the last active validator")
                 del stakes[tx.sender]
             nonces[tx.sender] = tx.nonce + 1
         elif tx.recipient == SLASH_SENTINEL:
@@ -776,6 +780,18 @@ def _demo() -> None:
     assert ce.unbonding_of(oe) == 0                  # confiscated despite the exit attempt
     assert ce.balance_of(treasury.address) == treasury_share
     assert ce.total_supply() == MAX_SUPPLY_UNITS
+
+    # GATE: the last active validator cannot unstake itself (would halt the chain).
+    solo = ProofOfStakeChain(
+        {alice.address: MAX_SUPPLY_UNITS - 1000 * COIN, v1.address: 1000 * COIN},
+        initial_stakes={v1.address: 1000 * COIN}, timestamp=1_700_000_000,
+    )
+    try:
+        solo.add_block([unstake_tx(v1, 1000 * COIN, 0, 0)], v1, 1_700_000_010)
+        raise AssertionError("unstaking the last validator should be rejected")
+    except ValidationError:
+        pass
+    assert solo.stake_of(v1.address) == 1000 * COIN  # untouched
 
     print("ALL CHECKS PASSED")
     print(f"  {NAME} ({SYMBOL}) PoS: blocks={len(chain.chain)}  validators={sorted(chain.stakes)}")
