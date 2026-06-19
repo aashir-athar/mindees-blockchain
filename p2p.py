@@ -27,10 +27,11 @@ import threading
 import time
 
 from core import ValidationError
-from network import decode_block, decode_tx, encode_tx, tcp_send
+from network import decode_block, decode_tx, encode_block, encode_tx, tcp_send
 
 _SEEN_CAP = 100_000  # bound de-dup memory (DoS): forget the oldest beyond this
 _MAX_PEERS = 256     # bound the peer table (DoS): ignore new peers beyond this
+_MAX_ORPHANS = 5_000  # bound buffered out-of-order blocks (DoS)
 
 
 class _Handler(socketserver.StreamRequestHandler):
@@ -60,6 +61,7 @@ class P2PNode:
         self.peers: list = []
         self.seen_tx: dict = {}
         self.seen_block: dict = {}
+        self.orphans: dict = {}  # previous_hash -> [block wire dicts] awaiting their parent
         self.server = _Server(self, host, port)
         self.host, self.port = self.server.server_address
         # The dialable address this node announces to others. For a real deploy pass a
@@ -145,12 +147,59 @@ class P2PNode:
             block = decode_block(msg["data"])
             if not self._remember(self.seen_block, block.hash):
                 return
+            self._apply_or_buffer(block, msg["data"])
+        elif kind == "get_blocks":
+            self._serve_blocks(msg)
+
+    # -- block sync (late joiners) ----------------------------------------- #
+    def request_sync(self) -> None:
+        """Ask peers for any blocks above our height (catch up a lagging/new node)."""
+        self._broadcast({
+            "type": "get_blocks",
+            "since": self.service.chain.head.index,
+            "reply": self.advertise,
+        })
+
+    def _serve_blocks(self, msg: dict) -> None:
+        reply = msg.get("reply", "")
+        host, sep, port = reply.rpartition(":")
+        if not sep or not port.isdigit():
+            return
+        since = msg.get("since", 0)
+        # Send our canonical blocks above `since`, in order, to the requester.
+        for block in self.service.tree.canonical.chain:
+            if block.index > since:
+                try:
+                    tcp_send(host, int(port), {"type": "block", "data": encode_block(block)})
+                except OSError:
+                    return
+
+    def _apply_or_buffer(self, block, data: dict) -> None:
+        tree = self.service.tree
+        if block.previous_hash not in tree.weight:
+            # Parent unknown -> stash the orphan and ask peers to catch us up.
+            if len(self.orphans) < _MAX_ORPHANS:
+                self.orphans.setdefault(block.previous_hash, []).append(data)
+            self.request_sync()
+            return
+        try:
+            result = self.service.receive_block({"block": data})
+        except ValidationError:
+            return  # invalid / finality conflict -> drop, don't relay
+        if result["accepted"]:
+            self._broadcast({"type": "block", "data": data})
+            self._drain_orphans(block.hash)
+
+    def _drain_orphans(self, parent_hash: str) -> None:
+        for data in self.orphans.pop(parent_hash, []):
+            child = decode_block(data)
             try:
-                result = self.service.receive_block({"block": msg["data"]})
+                result = self.service.receive_block({"block": data})
             except ValidationError:
-                return  # invalid / orphan / finality conflict -> drop, don't relay
+                continue
             if result["accepted"]:
-                self._broadcast(msg)
+                self._broadcast({"type": "block", "data": data})
+                self._drain_orphans(child.hash)
 
     # -- internals --------------------------------------------------------- #
     def _broadcast(self, msg: dict) -> None:
@@ -240,10 +289,28 @@ def _demo() -> None:
         b.announce()
         assert _wait_for(lambda: (c.host, c.port) in a.peers), "A did not discover C via B"
 
+        # Advance the chain a few more blocks (A is the validator).
+        for h in range(2, 5):
+            a.produce_and_gossip(timestamp=1_700_000_000 + h)
+        assert _wait_for(lambda: a.service.chain.head.index == 4)
+
+        # Late joiner: a brand-new node D starts behind, connects, and SYNCS the whole chain.
+        d_dir = tempfile.mkdtemp(prefix="mindees_p2pD_")
+        dirs.append(d_dir)
+        d = P2PNode(NodeService(fresh_store(d_dir)))
+        nodes.append(d)
+        d.start()
+        d.connect(a.host, a.port)
+        d.request_sync()                       # ask A for everything above genesis
+        assert _wait_for(lambda: d.service.chain.head.index == 4), "late joiner did not sync"
+        assert d.service.chain.head.hash == a.service.chain.head.hash
+        assert d.service.chain.total_supply() == MAX_SUPPLY_UNITS
+
         print("ALL CHECKS PASSED")
         print("  p2p: tx + block gossip over TCP, relayed across hops, converges to one head")
         print("  peer discovery: the mesh self-forms from a seed (A learned C through B)")
-        print(f"  3 nodes synced to height {c.service.chain.head.index}, supply intact")
+        print("  block sync: a late-joining node caught up the full chain from a peer")
+        print(f"  nodes synced to height {a.service.chain.head.index}, supply intact")
     finally:
         for n in nodes:
             n.stop()
@@ -342,6 +409,7 @@ def _cli(argv=None) -> None:
     try:
         while True:
             node.announce()                  # gossip peers so the mesh self-forms
+            node.request_sync()               # catch up if we are behind
             node.tick(int(time.time()))       # produce a block if it is our turn
             time.sleep(args.slot)
     except KeyboardInterrupt:

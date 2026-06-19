@@ -54,5 +54,5 @@ the secret from a real secrets manager.
 ## ⚠️ Mainnet / real value — not yet
 This is a correct, finality-having chain, but it has **no security audit and no track record**.
 Do not launch a network that holds real value until it has been independently audited and the
-deferred hardening (RFC-6979 signatures, BLS aggregation, state pruning, P2P block-sync for
-late joiners, inactivity-leak recovery) is done. Run testnets with valueless coins until then.
+deferred hardening (RFC-6979 signatures, BLS aggregation, state pruning, inactivity-leak
+recovery) is done. Run testnets with valueless coins until then.
