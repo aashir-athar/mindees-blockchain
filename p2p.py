@@ -28,24 +28,41 @@ import threading
 import time
 
 from consensus import vote_tx
-from core import ValidationError
+from core import ValidationError, sha256
 from network import decode_block, decode_tx, encode_block, encode_tx, tcp_send
 
-_SEEN_CAP = 100_000  # bound de-dup memory (DoS): forget the oldest beyond this
-_MAX_PEERS = 256     # bound the peer table (DoS): ignore new peers beyond this
+_SEEN_CAP = 100_000   # bound de-dup memory (DoS): forget the oldest beyond this
+_MAX_PEERS = 256      # bound the peer table (DoS): ignore new peers beyond this
 _MAX_ORPHANS = 5_000  # bound buffered out-of-order blocks (DoS)
+_MAX_MSG_BYTES = 4_000_000  # reject oversize gossip lines (DoS)
+
+
+def _block_wire_id(block) -> str:
+    """De-dup id over the FULL sealed block (hash + signature + pubkey).
+
+    block.hash deliberately excludes the validator signature, so an attacker could send an
+    unsigned twin with the same block.hash to poison a hash-keyed cache and censor the real
+    block. Including the signature here makes a forged twin a DIFFERENT id, so it can't.
+    """
+    return sha256((block.hash + block.validator_sig + block.proposer_pubkey).encode()).hex()
 
 
 class _Handler(socketserver.StreamRequestHandler):
+    timeout = 10  # drop slowloris / stalled peers
+
     def handle(self) -> None:
-        line = self.rfile.readline()
-        if not line:
-            return
+        # Bound the read, require a terminated line, and never let malformed/oversize/slow
+        # input crash this handler thread (it serves untrusted peers).
         try:
+            line = self.rfile.readline(_MAX_MSG_BYTES + 1)
+            if not line or len(line) > _MAX_MSG_BYTES or not line.endswith(b"\n"):
+                return
             msg = json.loads(line.decode())
-        except ValueError:
+            if not isinstance(msg, dict):
+                return
+            self.server.p2p._on_message(msg)  # type: ignore[attr-defined]
+        except (ValueError, KeyError, TypeError, ValidationError, OSError):
             return
-        self.server.p2p._on_message(msg)  # type: ignore[attr-defined]
 
 
 class _Server(socketserver.ThreadingTCPServer):
@@ -173,7 +190,7 @@ class P2PNode:
             self._learn_peers(msg)
             return
         if kind == "tx":
-            tx = decode_tx(msg["data"])
+            tx = decode_tx(msg.get("data"))   # raises ValidationError on malformed -> caught by handler
             if not self._remember(self.seen_tx, tx.txid):
                 return  # already seen -> stop the relay loop
             try:
@@ -182,8 +199,9 @@ class P2PNode:
                 return  # invalid -> drop, don't relay
             self._broadcast(msg)
         elif kind == "block":
-            block = decode_block(msg["data"])
-            if not self._remember(self.seen_block, block.hash):
+            block = decode_block(msg.get("data"))
+            # De-dup on a signature-inclusive id so a forged unsigned twin can't censor.
+            if not self._remember(self.seen_block, _block_wire_id(block)):
                 return
             self._apply_or_buffer(block, msg["data"])
         elif kind == "get_blocks":
@@ -321,6 +339,13 @@ def _demo() -> None:
         # Re-broadcasting the same block is a no-op everywhere (de-dup).
         a._broadcast({"type": "block", "data": a.service.get_block({"index": 1})})
         assert _wait_for(lambda: b.service.chain.head.index == 1)
+
+        # Dedup-poisoning defense: a forged twin (same block.hash, different signature) has a
+        # DIFFERENT wire-id, so it cannot censor the real block in the seen cache.
+        from consensus import seal_block
+        real = a.service.tree.canonical.chain[1]
+        twin = seal_block(real.previous_hash, real.index, v1, list(real.transactions), real.timestamp)
+        assert twin.hash == real.hash and _block_wire_id(twin) != _block_wire_id(real)
 
         # Peer discovery: A knows only B; B announces its peers (A, C); A learns C through B.
         assert (c.host, c.port) not in a.peers

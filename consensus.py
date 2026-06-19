@@ -44,6 +44,7 @@ from core import (
     Wallet,
     address_from_public_key,
     canonical,
+    is_units,
     sha256,
     verify_signature,
 )
@@ -60,6 +61,25 @@ FFG_NUM, FFG_DEN = 2, 3  # supermajority is FFG_DEN*voted >= FFG_NUM*total, i.e.
 # never a burn, so the fixed 1,000,000 supply is preserved exactly.
 SLASH_BPS = 10000     # 100% of the offender's bonded stake
 REPORTER_BPS = 500    # 5% of the slashed amount to the evidence author; 95% to treasury
+
+
+def _hexbytes(s) -> bytes:
+    """Parse attacker-controlled hex, raising ValidationError (not a raw ValueError)."""
+    try:
+        return bytes.fromhex(s)
+    except (ValueError, TypeError) as exc:
+        raise ValidationError(f"malformed hex field: {exc}") from exc
+
+
+def _load_json(s) -> dict:
+    """Parse attacker-controlled evidence JSON into a dict, raising ValidationError."""
+    try:
+        obj = json.loads(s)
+    except (ValueError, TypeError) as exc:
+        raise ValidationError(f"malformed evidence json: {exc}") from exc
+    if not isinstance(obj, dict):
+        raise ValidationError("evidence must be a JSON object")
+    return obj
 
 
 def elect_validator(stakes: Dict[str, int], seed: bytes) -> str:
@@ -93,8 +113,8 @@ class ProofOfStakeChain(Blockchain):
         # has an electable set. Supply is unchanged -- it just shifts liquid->staked.
         self.stakes: Dict[str, int] = {}
         for addr, amt in (initial_stakes or {}).items():
-            if amt <= 0:
-                raise ValidationError("non-positive initial stake")
+            if not is_units(amt) or amt == 0:
+                raise ValidationError("initial stake must be a positive integer")
             if self.balances.get(addr, 0) < amt:
                 raise ValidationError("initial stake exceeds genesis balance")
             self.balances[addr] -= amt
@@ -102,8 +122,10 @@ class ProofOfStakeChain(Blockchain):
 
         # Vesting grants: addr -> (total, start, cliff, duration). Fixed at genesis,
         # read-only thereafter, so they need no per-block snapshot/commit.
-        self.vesting: Dict[str, tuple] = dict(vesting or {})
+        self.vesting: Dict[str, tuple] = {a: tuple(g) for a, g in (vesting or {}).items()}
         for addr, grant in self.vesting.items():
+            if len(grant) != 4 or not all(is_units(x) for x in grant):
+                raise ValidationError("vesting grant must be 4 non-negative integers")
             held = self.balances.get(addr, 0) + self.stakes.get(addr, 0)
             if grant[0] > held:
                 raise ValidationError(f"vesting grant for {addr} exceeds its genesis holding")
@@ -205,10 +227,10 @@ class ProofOfStakeChain(Blockchain):
             raise ValidationError(f"wrong proposer: expected {expected}, got {block.validator}")
         if not block.proposer_pubkey or not block.validator_sig:
             raise ValidationError("missing validator block signature")
-        pub = bytes.fromhex(block.proposer_pubkey)
+        pub = _hexbytes(block.proposer_pubkey)
         if address_from_public_key(pub) != block.validator:
             raise ValidationError("proposer pubkey does not match validator address")
-        if not verify_signature(pub, bytes.fromhex(block.hash), bytes.fromhex(block.validator_sig)):
+        if not verify_signature(pub, bytes.fromhex(block.hash), _hexbytes(block.validator_sig)):
             raise ValidationError("invalid validator block signature")
 
     def _snapshot_aux(self) -> dict:
@@ -313,8 +335,13 @@ class ProofOfStakeChain(Blockchain):
         self._enforce_vesting(tx.sender, block.index, balances, stakes, unbonding)
 
     def _apply_vote(self, tx: Transaction, block: Block, balances, nonces, aux) -> None:
-        link = json.loads(tx.evidence)
-        s, sh, t, th = link["s"], link["sh"], link["t"], link["th"]
+        link = _load_json(tx.evidence)
+        try:
+            s, sh, t, th = link["s"], link["sh"], link["t"], link["th"]
+        except KeyError as exc:
+            raise ValidationError(f"vote link missing field {exc}") from exc
+        if not (isinstance(s, str) and isinstance(t, str) and is_units(sh) and is_units(th)):
+            raise ValidationError("vote link fields have wrong types")
         ffg_stake = aux["ffg_stake"]
         ffg_height = aux["ffg_height"]
 
@@ -365,7 +392,7 @@ class ProofOfStakeChain(Blockchain):
             raise ValidationError("slash tx carries no evidence")
         if self.treasury_address is None:
             raise ValidationError("chain has no treasury address for slashing")
-        data = json.loads(tx.evidence)
+        data = _load_json(tx.evidence)
         # Two fault kinds, one confiscation path. Dedup keys are type-disjoint so a block
         # fault and a vote fault by the same validator at one height never silence each other.
         if data.get("kind") == "vote":
@@ -469,10 +496,10 @@ def verify_equivocation(b1: Block, b2: Block) -> tuple:
     for b in (b1, b2):
         if not b.proposer_pubkey or not b.validator_sig:
             raise ValidationError("evidence: block is not self-authenticating")
-        pub = bytes.fromhex(b.proposer_pubkey)
+        pub = _hexbytes(b.proposer_pubkey)
         if address_from_public_key(pub) != b.validator:
             raise ValidationError("evidence: proposer pubkey does not match validator")
-        if not verify_signature(pub, bytes.fromhex(b.hash), bytes.fromhex(b.validator_sig)):
+        if not verify_signature(pub, bytes.fromhex(b.hash), _hexbytes(b.validator_sig)):
             raise ValidationError("evidence: invalid validator signature")
     return b1.validator, b1.index
 
@@ -493,7 +520,12 @@ def verify_vote_fault(tx_a: Transaction, tx_b: Transaction) -> tuple:
         raise ValidationError("vote-fault: not finality votes")
     if tx_a.sender != tx_b.sender:
         raise ValidationError("vote-fault: votes are from different voters")
-    la, lb = json.loads(tx_a.evidence), json.loads(tx_b.evidence)
+    la, lb = _load_json(tx_a.evidence), _load_json(tx_b.evidence)
+    try:
+        la = {"s": la["s"], "sh": la["sh"], "t": la["t"], "th": la["th"]}
+        lb = {"s": lb["s"], "sh": lb["sh"], "t": lb["t"], "th": lb["th"]}
+    except KeyError as exc:
+        raise ValidationError(f"vote-fault: link missing field {exc}") from exc
     double = la["th"] == lb["th"] and (la["t"] != lb["t"] or la["s"] != lb["s"])
     surround = (la["sh"] < lb["sh"] and lb["th"] < la["th"]) or \
                (lb["sh"] < la["sh"] and la["th"] < lb["th"])

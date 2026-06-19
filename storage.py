@@ -35,6 +35,11 @@ GENESIS_FILE = "genesis.json"
 BLOCKS_FILE = "blocks.jsonl"
 
 
+def _reject_float(_s):
+    # JSON numbers with a decimal point would become floats and break the integer ledger.
+    raise ValidationError("genesis.json contains a float; all amounts must be integers")
+
+
 def _atomic_write(path: str, text: str) -> None:
     """Write via temp file + os.replace so a crash can't leave a half-written genesis."""
     directory = os.path.dirname(path) or "."
@@ -98,38 +103,45 @@ class BlockStore:
 
     def genesis_params(self) -> tuple:
         """The genesis args tuple (also the BlockTree constructor args), read from disk."""
-        with open(self.genesis_path, encoding="utf-8") as f:
-            g = json.load(f)
-        vesting = {addr: tuple(grant) for addr, grant in g.get("vesting", {}).items()}
-        return (
-            g["allocations"], g["initial_stakes"], g["timestamp"], vesting,
-            g.get("unbonding_blocks", 0), g.get("treasury_address"), g.get("epoch", 32),
-        )
+        try:
+            with open(self.genesis_path, encoding="utf-8") as f:
+                g = json.load(f, parse_float=_reject_float)  # floats are rejected at decode
+            vesting = {addr: tuple(grant) for addr, grant in g.get("vesting", {}).items()}
+            return (
+                g["allocations"], g["initial_stakes"], g["timestamp"], vesting,
+                g.get("unbonding_blocks", 0), g.get("treasury_address"), g.get("epoch", 32),
+            )
+        except (KeyError, TypeError, AttributeError, json.JSONDecodeError) as exc:
+            raise ValidationError(f"malformed genesis.json: {exc}") from exc
 
-    def iter_blocks(self):
-        """Yield every persisted block in append order (parents before children)."""
+    def _committed_lines(self):
+        """Yield fully-committed lines; a trailing partial line (crash before fsync) is dropped."""
         if not os.path.exists(self.blocks_path):
             return
         with open(self.blocks_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    yield decode_block(json.loads(line))
+            for raw in f:
+                if not raw.endswith("\n"):
+                    break  # last line never got its newline -> not committed, ignore it
+                stripped = raw.strip()
+                if stripped:
+                    yield stripped
+
+    def iter_blocks(self):
+        """Yield every persisted block in append order (parents before children)."""
+        for lineno, line in enumerate(self._committed_lines(), start=1):
+            try:
+                yield decode_block(json.loads(line))
+            except (ValidationError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                raise ValidationError(f"corrupt block store at line {lineno}: {exc}") from exc
 
     def load(self) -> ProofOfStakeChain:
         """Rebuild a single linear chain from disk, re-validating every block."""
         chain = ProofOfStakeChain(*self.genesis_params())
-        if os.path.exists(self.blocks_path):
-            with open(self.blocks_path, encoding="utf-8") as f:
-                for lineno, line in enumerate(f, start=1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    block = decode_block(json.loads(line))
-                    try:
-                        chain.submit_block(block)
-                    except ValidationError as exc:
-                        raise ValidationError(f"corrupt block store at line {lineno}: {exc}") from exc
+        for lineno, line in enumerate(self._committed_lines(), start=1):
+            try:
+                chain.submit_block(decode_block(json.loads(line)))
+            except (ValidationError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                raise ValidationError(f"corrupt block store at line {lineno}: {exc}") from exc
         return chain
 
 

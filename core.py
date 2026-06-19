@@ -70,6 +70,15 @@ def canonical(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
 
 
+def is_units(v) -> bool:
+    """A valid base-unit amount: a non-negative plain int (NOT a bool, NOT a float).
+
+    Money is always integer base units. A float anywhere makes supply summation
+    order-dependent across nodes -> a consensus fork; bool is an int subclass we must reject.
+    """
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+
 def b58check(payload: bytes) -> str:
     """Base58Check encode (version byte assumed already prepended)."""
     raw = payload + double_sha256(payload)[:4]
@@ -192,15 +201,17 @@ class Transaction:
 
     def is_valid(self) -> bool:
         """Stateless validity: shape + signature + pubkey/address binding."""
+        # amount/fee/nonce must be non-negative plain ints (no float, no bool) -- a float
+        # amount would make ledger sums order-dependent across nodes (consensus fork).
+        if not (is_units(self.amount) and is_units(self.fee) and is_units(self.nonce)):
+            return False
         # Slash and finality-vote txs carry amount 0 + evidence; everything else is amount > 0.
         if self.recipient in (SLASH_SENTINEL, VOTE_SENTINEL):
             if self.amount != 0 or not self.evidence:
                 return False
         elif self.amount <= 0:
             return False
-        if self.fee < 0 or self.nonce < 0:
-            return False
-        if not self.public_key or not self.signature:
+        if not isinstance(self.evidence, str) or not self.public_key or not self.signature:
             return False
         try:
             pub = bytes.fromhex(self.public_key)
@@ -266,6 +277,11 @@ class Blockchain:
     def __init__(self, allocations: Dict[str, int], timestamp: int = 0):
         # ponytail: fixed supply minted once at genesis, fee-only incentives --
         # no block reward, so the cap can never be exceeded by construction.
+        # Every amount MUST be a plain int: a float allocation makes the ledger float-typed,
+        # and order-dependent float summation in _check_supply would give different
+        # total_supply() on different nodes for the same chain -> a consensus fork.
+        if not all(is_units(v) for v in allocations.values()):
+            raise ValidationError("genesis allocations must be non-negative integers")
         total = sum(allocations.values())
         if total != MAX_SUPPLY_UNITS:
             raise ValidationError(
@@ -462,6 +478,19 @@ def _demo() -> None:
         raise AssertionError("under-allocated genesis should have been rejected")
     except ValidationError:
         pass
+
+    # Float / bool genesis allocations are rejected (a float ledger forks consensus).
+    for bad in (float(MAX_SUPPLY_UNITS), True):
+        try:
+            Blockchain({alice.address: bad})
+            raise AssertionError("non-integer genesis allocation should be rejected")
+        except ValidationError:
+            pass
+    assert not is_units(1.0) and not is_units(True) and is_units(5) and not is_units(-1)
+
+    # A float-amount transaction is invalid (never reaches the ledger as a float).
+    float_tx = Transaction(alice.address, bob.address, 1.5, 0, 0).sign(alice)
+    assert not float_tx.is_valid()
 
     print("ALL CHECKS PASSED")
     print(f"  {NAME} ({SYMBOL})  supply={MAX_SUPPLY:,} coins = {MAX_SUPPLY_UNITS:,} units")

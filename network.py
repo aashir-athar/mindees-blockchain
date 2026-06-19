@@ -43,7 +43,12 @@ def encode_tx(tx: Transaction) -> dict:
 
 
 def decode_tx(d: dict) -> Transaction:
-    return Transaction(**{k: d[k] for k in _TX_FIELDS})
+    if not isinstance(d, dict):
+        raise ValidationError("transaction must be an object")
+    try:
+        return Transaction(**{k: d[k] for k in _TX_FIELDS})
+    except (KeyError, TypeError) as exc:
+        raise ValidationError(f"malformed transaction: {exc}") from exc
 
 
 def encode_block(b: Block) -> dict:
@@ -61,17 +66,25 @@ def encode_block(b: Block) -> dict:
 
 
 def decode_block(d: dict) -> Block:
-    return Block(
-        index=d["index"],
-        previous_hash=d["previous_hash"],
-        timestamp=d["timestamp"],
-        transactions=[decode_tx(t) for t in d["transactions"]],
-        validator=d["validator"],
-        nonce=d.get("nonce", 0),
-        merkle_root=d["merkle_root"],  # preserved so the block hash is identical
-        proposer_pubkey=d.get("proposer_pubkey", ""),
-        validator_sig=d.get("validator_sig", ""),
-    )
+    if not isinstance(d, dict):
+        raise ValidationError("block must be an object")
+    txs = d.get("transactions")
+    if not isinstance(txs, list):
+        raise ValidationError("block.transactions must be a list")
+    try:
+        return Block(
+            index=d["index"],
+            previous_hash=d["previous_hash"],
+            timestamp=d["timestamp"],
+            transactions=[decode_tx(t) for t in txs],
+            validator=d["validator"],
+            nonce=d.get("nonce", 0),
+            merkle_root=d["merkle_root"],  # preserved so the block hash is identical
+            proposer_pubkey=d.get("proposer_pubkey", ""),
+            validator_sig=d.get("validator_sig", ""),
+        )
+    except (KeyError, TypeError) as exc:
+        raise ValidationError(f"malformed block: {exc}") from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -154,17 +167,27 @@ class Node:
 # --------------------------------------------------------------------------- #
 # Thin TCP ingest (one message per connection: {"type": "tx"|"block", "data": ...})
 # --------------------------------------------------------------------------- #
+_MAX_MSG_BYTES = 4_000_000  # reject oversize ingest lines (DoS)
+
+
 class _Handler(socketserver.StreamRequestHandler):
+    timeout = 10  # drop slow/stalled peers
+
     def handle(self) -> None:
-        line = self.rfile.readline()
-        if not line:
+        try:
+            line = self.rfile.readline(_MAX_MSG_BYTES + 1)
+            if not line or len(line) > _MAX_MSG_BYTES or not line.endswith(b"\n"):
+                return
+            msg = json.loads(line.decode())
+            if not isinstance(msg, dict):
+                return
+            node = self.server.node  # type: ignore[attr-defined]
+            if msg.get("type") == "tx":
+                node._recv_tx(msg["data"], origin=None)
+            elif msg.get("type") == "block":
+                node._recv_block(msg["data"], origin=None)
+        except (ValueError, KeyError, TypeError, ValidationError, OSError):
             return
-        msg = json.loads(line.decode())
-        node = self.server.node  # type: ignore[attr-defined]
-        if msg["type"] == "tx":
-            node._recv_tx(msg["data"], origin=None)
-        elif msg["type"] == "block":
-            node._recv_block(msg["data"], origin=None)
 
 
 class TCPIngest(socketserver.ThreadingTCPServer):
@@ -211,6 +234,20 @@ def _demo() -> None:
     bob = Wallet.from_secret(2)
     v1, v2 = Wallet.from_secret(3), Wallet.from_secret(4)
     wallets = {w.address: w for w in (alice, bob, v1, v2)}
+
+    # Malformed wire input raises ValidationError (caught everywhere), never a raw crash.
+    for bad in (None, "x", 5, {}, {"transactions": "nope"}):
+        try:
+            decode_block(bad)
+            raise AssertionError("malformed block should be rejected")
+        except ValidationError:
+            pass
+    for bad in (None, 7, {"sender": "a"}):
+        try:
+            decode_tx(bad)
+            raise AssertionError("malformed tx should be rejected")
+        except ValidationError:
+            pass
 
     # Wire codec round-trips preserve identity (txid / block hash unchanged).
     tx = Transaction(alice.address, bob.address, 100 * COIN, 1 * COIN, 0).sign(alice)
