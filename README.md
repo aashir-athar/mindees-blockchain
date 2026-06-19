@@ -97,8 +97,9 @@ Each module is self-contained and self-testing — run it directly to execute it
   recovery is social/governance — no inactivity-leak in v1.
 - **Weak subjectivity:** a finalized checkpoint is economically irreversible only while offending stake
   is bonded; new/long-offline nodes should sync from a recent finalized checkpoint.
-- **Deferred:** RFC-6979 deterministic signatures, BLS vote aggregation, state pruning, and peer
-  discovery/outbound-retry on the mesh.
+- **Deferred:** RFC-6979 deterministic signatures, BLS vote aggregation, state pruning, and P2P
+  block-sync for late-joining nodes (the sync algorithm exists in `network.py`; it isn't yet wired
+  over the TCP mesh, so today's nodes must join from low height — peer *discovery* is implemented).
 
 This is a *correct* chain with accountable finality. It is not a battle-tested *secure* L1 — no audit,
 no track record — and we don't claim it is. The honest wins are fixed supply, energy, and speed.

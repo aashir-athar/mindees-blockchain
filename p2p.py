@@ -30,6 +30,7 @@ from core import ValidationError
 from network import decode_block, decode_tx, encode_tx, tcp_send
 
 _SEEN_CAP = 100_000  # bound de-dup memory (DoS): forget the oldest beyond this
+_MAX_PEERS = 256     # bound the peer table (DoS): ignore new peers beyond this
 
 
 class _Handler(socketserver.StreamRequestHandler):
@@ -54,13 +55,16 @@ class _Server(socketserver.ThreadingTCPServer):
 
 
 class P2PNode:
-    def __init__(self, service, host: str = "127.0.0.1", port: int = 0):
+    def __init__(self, service, host: str = "127.0.0.1", port: int = 0, advertise: str = ""):
         self.service = service
         self.peers: list = []
         self.seen_tx: dict = {}
         self.seen_block: dict = {}
         self.server = _Server(self, host, port)
         self.host, self.port = self.server.server_address
+        # The dialable address this node announces to others. For a real deploy pass a
+        # reachable host; on localhost the bind address is fine.
+        self.advertise = advertise or f"{self.host}:{self.port}"
         self._thread = None
 
     # -- lifecycle --------------------------------------------------------- #
@@ -90,6 +94,22 @@ class P2PNode:
         self._broadcast({"type": "block", "data": block})
         return block
 
+    def announce(self) -> None:
+        """Tell peers who we are and who we know, so the mesh self-forms from a seed."""
+        known = [f"{h}:{p}" for h, p in self.peers]
+        self._broadcast({"type": "hello", "addr": self.advertise, "peers": known})
+
+    def _learn_peers(self, msg: dict) -> None:
+        for addr in [msg.get("addr")] + msg.get("peers", []):
+            if not addr or addr == self.advertise:
+                continue
+            host, sep, port = addr.rpartition(":")
+            if not sep or not port.isdigit():
+                continue
+            peer = (host, int(port))
+            if peer not in self.peers and len(self.peers) < _MAX_PEERS:
+                self.peers.append(peer)
+
     def tick(self, timestamp: int = 0):
         """Produce + gossip the next block IFF this node is the elected validator.
 
@@ -109,6 +129,9 @@ class P2PNode:
 
     def _on_message(self, msg: dict) -> None:
         kind = msg.get("type")
+        if kind == "hello":
+            self._learn_peers(msg)
+            return
         if kind == "tx":
             tx = decode_tx(msg["data"])
             if not self._remember(self.seen_tx, tx.txid):
@@ -212,8 +235,14 @@ def _demo() -> None:
         a._broadcast({"type": "block", "data": a.service.get_block({"index": 1})})
         assert _wait_for(lambda: b.service.chain.head.index == 1)
 
+        # Peer discovery: A knows only B; B announces its peers (A, C); A learns C through B.
+        assert (c.host, c.port) not in a.peers
+        b.announce()
+        assert _wait_for(lambda: (c.host, c.port) in a.peers), "A did not discover C via B"
+
         print("ALL CHECKS PASSED")
         print("  p2p: tx + block gossip over TCP, relayed across hops, converges to one head")
+        print("  peer discovery: the mesh self-forms from a seed (A learned C through B)")
         print(f"  3 nodes synced to height {c.service.chain.head.index}, supply intact")
     finally:
         for n in nodes:
@@ -312,7 +341,8 @@ def _cli(argv=None) -> None:
           f"validator={'yes' if validator else 'no'}  height={node.service.chain.head.index}")
     try:
         while True:
-            node.tick(int(time.time()))
+            node.announce()                  # gossip peers so the mesh self-forms
+            node.tick(int(time.time()))       # produce a block if it is our turn
             time.sleep(args.slot)
     except KeyboardInterrupt:
         node.stop()
