@@ -98,6 +98,20 @@ docker compose up --build        # containerised 3-node testnet
 See [DEPLOY.md](DEPLOY.md) for multi-host deployment and key handling, and
 [MAINNET.md](MAINNET.md) for the mainnet launch runbook (and its prerequisites).
 
+## Live testnet on GitHub
+
+A scheduled GitHub Actions workflow runs Mindees **live, for free**: every 15 minutes a runner
+produces blocks, casts finality votes, and commits the new chain state to
+[`chain-state/`](chain-state/) — see the always-current
+[`chain-state/status.json`](chain-state/status.json) for the height, finalized checkpoint, and
+supply. Workflows: [`launch.yml`](.github/workflows/launch.yml) (one-time genesis) and
+[`chain.yml`](.github/workflows/chain.yml) (the cron). The validator key is a repo Actions secret.
+
+**Honest scope:** GitHub runners are ephemeral, so this cron is the *sole* block producer — a
+**centralized, valueless single-producer testnet**, not a decentralized or value-bearing mainnet.
+It exists to keep a real, public, always-advancing chain visible at zero cost. A value-bearing
+mainnet still needs independent hosts and a security audit (see [MAINNET.md](MAINNET.md)).
+
 ## Architecture
 
 Pure Python, one dependency (`cryptography`). Each module is self-contained and self-testing —
