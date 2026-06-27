@@ -4,6 +4,12 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
+**Live mainnet (bootstrap):**
+[![height](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Faashir-athar%2Fmindees-blockchain%2Fmain%2Fchain-state%2Fstatus.json&query=%24.height&label=height&color=brightgreen)](chain-state/status.json)
+[![finalized](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Faashir-athar%2Fmindees-blockchain%2Fmain%2Fchain-state%2Fstatus.json&query=%24.finalized_height&label=finalized&color=blue)](chain-state/status.json)
+[![supply](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Faashir-athar%2Fmindees-blockchain%2Fmain%2Fchain-state%2Fstatus.json&query=%24.supply&label=supply&color=informational)](chain-state/status.json)
+[![supply exact](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Faashir-athar%2Fmindees-blockchain%2Fmain%2Fchain-state%2Fstatus.json&query=%24.supply_ok&label=supply%20exact&color=success)](chain-state/status.json)
+
 **Mindees** is a from-scratch **Proof-of-Stake (PoS) Layer-1 blockchain** and **cryptocurrency**,
 written in pure **Python** with a single dependency. It has a **fixed supply of exactly
 1,000,000 MIND** — minted once at genesis, with **zero inflation, ever**. Mindees implements the
@@ -113,6 +119,9 @@ guaranteed value** and must not be treated as one. Reaching a mainnet people can
 value on requires two things this repo cannot provide by itself: **independent 24/7 validators**
 (decentralization) and an **independent security audit**. The turnkey path for real operators is
 [`launch_mainnet.py`](launch_mainnet.py) + [MAINNET.md](MAINNET.md).
+
+**Run a node / help decentralize it:** anyone can sync, verify, and gossip — see
+[JOIN.md](JOIN.md).
 
 ## Architecture
 
