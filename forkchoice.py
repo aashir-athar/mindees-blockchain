@@ -107,23 +107,32 @@ class BlockTree:
         if self.ws_checkpoint and new_height == self.ws_checkpoint[1] and bh != self.ws_checkpoint[0]:
             raise ValidationError("block conflicts with the weak-subjectivity checkpoint")
 
-        # Validate against the PARENT's state (not necessarily the current head).
-        parent_chain = self.chain_at(ph)
-        proposer_stake = parent_chain.stake_of(block.validator)  # weight from parent state
-        parent_chain.submit_block(block)  # raises ValidationError if the block is invalid
+        # Validate against the PARENT's state. FAST PATH: when the block extends the current
+        # canonical head, apply it directly to self.canonical (O(1)) instead of replaying the
+        # whole branch from genesis (O(height)). The two are equivalent because chain_at(head)
+        # reconstructs exactly self.canonical. This turns linear growth from O(N^2) to O(N).
+        extends_head = (ph == self.head_hash)
+        if extends_head:
+            proposer_stake = self.canonical.stake_of(block.validator)
+            self.canonical.submit_block(block)   # raises ValidationError if invalid; atomic
+            validated = self.canonical
+        else:
+            validated = self.chain_at(ph)
+            proposer_stake = validated.stake_of(block.validator)
+            validated.submit_block(block)        # raises ValidationError if invalid
 
         self.blocks[bh] = block
         self.parent[bh] = ph
         self.height[bh] = new_height
         self.weight[bh] = self.weight[ph] + proposer_stake
-        # Advance the finalized frontier from the new block's branch BEFORE choosing the
-        # head, so the head scan filters against the current frontier.
-        fh, fhgt = parent_chain.finalized_checkpoint()
+
+        # Advance the finalized frontier from the validated branch (before choosing the head).
+        fh, fhgt = validated.finalized_checkpoint()
         if fhgt > self.finalized_height:
             # Safety backstop: the new finalized checkpoint MUST extend the current one. If
             # this branch finalized something that conflicts with our finalized prefix, that
             # is an attributable >=1/3 stake fault -- halt loudly rather than silently fork.
-            branch = parent_chain.chain
+            branch = validated.chain
             if (self.finalized_height < len(branch)
                     and branch[self.finalized_height].hash != self.finalized_hash):
                 raise ConflictingFinalityError(
@@ -131,7 +140,14 @@ class BlockTree:
                     f"{self.finalized_hash}@{self.finalized_height} is already final"
                 )
             self.finalized_hash, self.finalized_height = fh, fhgt
-        self._update_head()
+
+        if extends_head:
+            # A head extension is, by construction, the new heaviest leaf (its weight is the
+            # old head's + this proposer's stake, and the old head was heaviest). No rescan,
+            # and self.canonical is already at it -- O(1).
+            self.head_hash = bh
+        else:
+            self._update_head()  # a fork: it might overtake -> full scan + rebuild if it wins
         return True
 
     def _better(self, a: str, b: str) -> bool:
