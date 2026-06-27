@@ -1,0 +1,33 @@
+name: Launch chain
+
+# One-time: initialise the genesis and commit it. Run manually from the Actions tab.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mindees-chain        # shared with "Advance chain" so they never race
+  cancel-in-progress: false
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Initialise genesis
+        env:
+          MINDEES_VALIDATOR_SECRET: ${{ secrets.MINDEES_VALIDATOR_SECRET }}
+        run: python gh_chain.py init --data chain-state
+      - name: Commit genesis
+        run: |
+          git config user.name "mindees-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add chain-state
+          git commit -m "launch: initialise Mindees chain genesis [skip ci]" || echo "nothing to commit"
+          git push

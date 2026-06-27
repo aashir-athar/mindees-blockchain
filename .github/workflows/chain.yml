@@ -1,0 +1,42 @@
+name: Advance chain
+
+# The "live" loop: every 15 minutes a runner advances the chain a few blocks (produce + vote
+# -> finality) and commits the new state. GitHub Actions can't host a 24/7 node, so this cron
+# IS the producer. It is a free, public, single-producer TESTNET -- not a decentralised or
+# value-bearing mainnet.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      blocks:
+        description: "blocks to advance this run"
+        default: "6"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mindees-chain
+  cancel-in-progress: false
+
+jobs:
+  advance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Advance the chain
+        env:
+          MINDEES_VALIDATOR_SECRET: ${{ secrets.MINDEES_VALIDATOR_SECRET }}
+        run: python gh_chain.py tick --data chain-state --blocks "${{ github.event.inputs.blocks || '6' }}"
+      - name: Commit new blocks
+        run: |
+          git config user.name "mindees-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add chain-state
+          git commit -m "chain: advance [skip ci]" || echo "nothing to commit"
+          git push
