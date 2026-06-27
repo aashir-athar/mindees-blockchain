@@ -141,6 +141,7 @@ class ProofOfStakeChain(Blockchain):
         # addr -> list of (amount, bond_height, release_height); addr -> set of offenses
         self.unbonding: Dict[str, list] = {}
         self.slashed: set = set()
+        self.slashed_addrs: set = set()  # proven-Byzantine validators, excluded from FFG quorum
 
         # Finality (FFG) state. All reproducible by replaying blocks, so a disk-booted node
         # and a live node derive identical finalized state. Genesis is a checkpoint that is
@@ -240,6 +241,7 @@ class ProofOfStakeChain(Blockchain):
             "stakes": dict(self.stakes),
             "unbonding": {a: [tuple(e) for e in q] for a, q in self.unbonding.items()},
             "slashed": set(self.slashed),
+            "slashed_addrs": set(self.slashed_addrs),
             "ffg_stake": {h: dict(m) for h, m in self.ffg_stake.items()},
             "ffg_height": dict(self.ffg_height),
             "ffg_votes": {k: set(v) for k, v in self.ffg_votes.items()},
@@ -252,6 +254,7 @@ class ProofOfStakeChain(Blockchain):
         self.stakes = aux["stakes"]
         self.unbonding = aux["unbonding"]
         self.slashed = aux["slashed"]
+        self.slashed_addrs = aux["slashed_addrs"]
         self.ffg_stake = aux["ffg_stake"]
         self.ffg_height = aux["ffg_height"]
         self.ffg_votes = aux["ffg_votes"]
@@ -363,6 +366,8 @@ class ProofOfStakeChain(Blockchain):
             raise ValidationError("vote: source checkpoint is not justified")
 
         voter = tx.sender
+        if voter in aux["slashed_addrs"]:
+            raise ValidationError("vote: slashed validators cannot vote")
         if ffg_stake[s].get(voter, 0) <= 0:
             raise ValidationError("vote: voter has no stake at the source checkpoint")
         # One vote per (voter, target_height): a second, different vote is a slashable fault,
@@ -381,11 +386,14 @@ class ProofOfStakeChain(Blockchain):
         voters.add(voter)
         seen[(voter, th)] = (s, t)
 
-        # Justify the target at >= 2/3 of the SOURCE snapshot's stake (integer-exact).
+        # Justify at >= 2/3 of the SOURCE snapshot's stake, EXCLUDING proven-Byzantine
+        # (slashed) validators from both the votes and the denominator -- so slashed stake
+        # can neither help justify nor stall finality by inflating the quorum bar.
         snapshot = ffg_stake[s]
-        voted = sum(snapshot.get(v, 0) for v in voters)
-        total = sum(snapshot.values())
-        if FFG_DEN * voted >= FFG_NUM * total:
+        slashed_addrs = aux["slashed_addrs"]
+        voted = sum(snapshot.get(v, 0) for v in voters if v not in slashed_addrs)
+        total = sum(amt for a, amt in snapshot.items() if a not in slashed_addrs)
+        if total > 0 and FFG_DEN * voted >= FFG_NUM * total:
             aux["justified"].add(t)
             # Finalize the source iff the target is its DIRECT epoch child (gap-free).
             if th == sh + self.epoch and sh > aux["finalized"][1]:
@@ -421,6 +429,7 @@ class ProofOfStakeChain(Blockchain):
         bonded = stakes.get(offender, 0) + sum(a for (a, _, _) in unbonding.get(offender, []))
         stakes.pop(offender, None)
         unbonding.pop(offender, None)
+        aux["slashed_addrs"].add(offender)  # excluded from the FFG quorum from now on
 
         reporter_share = bonded * REPORTER_BPS // 10000
         treasury_share = bonded - reporter_share
