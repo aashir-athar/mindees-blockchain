@@ -1,9 +1,10 @@
 name: Advance chain
 
-# The "live" loop: every 15 minutes a runner advances the chain a few blocks (produce + vote
-# -> finality) and commits the new state. GitHub Actions can't host a 24/7 node, so this cron
-# IS the producer. It is a free, public, single-producer TESTNET -- not a decentralised or
-# value-bearing mainnet.
+# The "live" loop for the Mindees mainnet (bootstrap phase): every 15 minutes a runner advances
+# the chain (produce + vote -> finality) and commits the new state. GitHub Actions can't host a
+# 24/7 node, so this single cron is currently the SOLE producer (centralized) and the chain is
+# UNAUDITED -- MIND has no guaranteed value. Decentralisation + an audit are required before
+# anyone relies on it for value.
 on:
   schedule:
     - cron: "*/15 * * * *"

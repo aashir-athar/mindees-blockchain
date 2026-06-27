@@ -50,8 +50,11 @@ def _write_status(data: str) -> None:
         "supply_ok": chain.total_supply() == MAX_SUPPLY_UNITS,
         "validators": sorted(chain.stakes),
         "updated_unix": int(time.time()),
-        "note": "Free GitHub-Actions-hosted single-producer testnet. Experimental, unaudited, "
-                "valueless. Not a decentralised or value-bearing mainnet.",
+        "phase": "mainnet-bootstrap",
+        "note": "Mindees mainnet, bootstrap phase: live and self-finalizing, but produced by a "
+                "single GitHub-Actions validator and UNAUDITED -- MIND has no guaranteed value. "
+                "Independent validators and an independent security audit are required before "
+                "relying on this network for anything of value.",
     }
     with open(os.path.join(data, "status.json"), "w", encoding="utf-8") as f:
         json.dump(status, f, indent=2)
