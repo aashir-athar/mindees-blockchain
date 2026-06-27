@@ -27,7 +27,17 @@ from typing import Dict, List
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import (
+    decode_dss_signature,
+    encode_dss_signature,
+)
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+# secp256k1 group order. ECDSA signatures are malleable: (r, s) and (r, N-s) both verify.
+# We canonicalize to low-S (s <= N/2) on signing and REJECT high-S on verify, so each
+# transaction has exactly one valid signature -> one stable txid (no malleable twins).
+_SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+_HALF_N = _SECP256K1_N // 2
 
 # --------------------------------------------------------------------------- #
 # Monetary constants. Everything is integer base units -- never floats for money.
@@ -128,7 +138,12 @@ class Wallet:
         return address_from_public_key(self.public_key_bytes)
 
     def sign(self, message: bytes) -> bytes:
-        return self._priv.sign(message, ec.ECDSA(hashes.SHA256()))
+        sig = self._priv.sign(message, ec.ECDSA(hashes.SHA256()))
+        r, s = decode_dss_signature(sig)
+        if s > _HALF_N:               # canonicalize to low-S so the signature is unique
+            s = _SECP256K1_N - s
+            sig = encode_dss_signature(r, s)
+        return sig
 
 
 def address_from_public_key(public_key_bytes: bytes) -> str:
@@ -141,6 +156,9 @@ def address_from_public_key(public_key_bytes: bytes) -> str:
 
 def verify_signature(public_key_bytes: bytes, message: bytes, signature: bytes) -> bool:
     try:
+        r, s = decode_dss_signature(signature)
+        if not (1 <= r < _SECP256K1_N and 1 <= s <= _HALF_N):
+            return False  # reject high-S (malleable) and out-of-range signatures
         pub = ec.EllipticCurvePublicKey.from_encoded_point(_CURVE, public_key_bytes)
         pub.verify(signature, message, ec.ECDSA(hashes.SHA256()))
         return True
@@ -491,6 +509,15 @@ def _demo() -> None:
     # A float-amount transaction is invalid (never reaches the ledger as a float).
     float_tx = Transaction(alice.address, bob.address, 1.5, 0, 0).sign(alice)
     assert not float_tx.is_valid()
+
+    # Low-S: signatures are canonical (s <= N/2) and the malleable high-S twin is rejected.
+    msg = b"canonical-s-check"
+    sig = alice.sign(msg)
+    r, s = decode_dss_signature(sig)
+    assert s <= _HALF_N
+    assert verify_signature(alice.public_key_bytes, msg, sig)
+    high_s_twin = encode_dss_signature(r, _SECP256K1_N - s)
+    assert not verify_signature(alice.public_key_bytes, msg, high_s_twin)
 
     print("ALL CHECKS PASSED")
     print(f"  {NAME} ({SYMBOL})  supply={MAX_SUPPLY:,} coins = {MAX_SUPPLY_UNITS:,} units")
