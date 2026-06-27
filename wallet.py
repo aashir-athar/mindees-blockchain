@@ -145,7 +145,13 @@ def main(argv=None) -> None:
 
     if args.cmd == "balance":
         units = rpc_call(args.rpc, "balance", address=args.address)
-        print(f"{units // COIN:,}.{units % COIN:0{DECIMALS}d} {SYMBOL}  ({units} base units)")
+        staked = rpc_call(args.rpc, "stake", address=args.address)
+        locked = rpc_call(args.rpc, "locked", address=args.address)
+        fmt = lambda u: f"{u // COIN:,}.{u % COIN:0{DECIMALS}d}"  # noqa: E731
+
+        print(f"{fmt(units)} {SYMBOL} liquid  (+ {fmt(staked)} staked = {fmt(units + staked)} total)")
+        if locked:
+            print(f"  of which {fmt(locked)} {SYMBOL} is vesting-locked (cannot be sent yet)")
         return
 
     # send / stake / unstake all build a signed tx and submit it.
