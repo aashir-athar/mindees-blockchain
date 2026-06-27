@@ -1,0 +1,41 @@
+# /etc/systemd/system/mindees-node@.service
+# Always-on Mindees gossip + block-producer node (p2p.py serve).
+# Instance: `systemctl enable --now mindees-node@validator`  or  `@rpc`.
+# Role is selected by MINDEES_VALIDATOR_FLAGS in the EnvironmentFile:
+#   validator -> MINDEES_VALIDATOR_FLAGS=--validator-keystore /var/lib/mindees/keys/validator.json
+#   rpc       -> MINDEES_VALIDATOR_FLAGS=            (gossip only, no validator key)
+# Public p2p binds 0.0.0.0 (p2p.py has no loopback guard, so this is explicit and intended).
+# --advertise MUST be the node's PUBLIC host:port or new peers cannot dial back (no NAT punching).
+[Unit]
+Description=Mindees gossip/producer node (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mindees
+Group=mindees
+WorkingDirectory=/opt/mindees
+EnvironmentFile=/etc/mindees/mindees.env
+ExecStart=/usr/bin/python3 /opt/mindees/p2p.py serve \
+  --data /var/lib/mindees/data \
+  --host 0.0.0.0 \
+  --port 9000 \
+  --advertise ${MINDEES_ADVERTISE} \
+  --slot 2 \
+  $MINDEES_VALIDATOR_FLAGS $MINDEES_PEER_FLAGS
+Restart=always
+RestartSec=3
+# hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/mindees/data
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+
+# NOTE: define MINDEES_ADVERTISE, MINDEES_VALIDATOR_FLAGS, and MINDEES_PEER_FLAGS
+# (space-separated `--peer host:port --peer host:port`) in /etc/mindees/mindees.env.

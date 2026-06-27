@@ -1,0 +1,19 @@
+# Mindees seed / bootstrap list.
+# Format: one dialable PUBLIC host:port per non-comment line (the p2p gossip port, default 9000).
+# A new node joins with:  python p2p.py serve --data ./data --host 0.0.0.0 --port 9000 \
+#                            --advertise <YOUR_PUBLIC_HOST>:9000 \
+#                            $(grep -vE '^#|^$' seeds.txt | sed 's/^/--peer /')
+# The mesh self-forms from here (hello/peer-exchange, p2p.py:120-134); late joiners auto-sync
+# missing blocks (get_blocks, p2p.py:212-218).
+#
+# --- canonical seed validators (edit to your real hostnames) ---
+seed1.mindees.example:9000
+seed2.mindees.example:9000
+seed3.mindees.example:9000
+#
+# --- public read/write JSON-RPC endpoint (for wallets, explorers, wallet.py --rpc) ---
+# RPC: https://rpc.mindees.example/
+#
+# --- genesis verification (fill in at launch; see GO-LIVE.md) ---
+# GENESIS_SHA256: <paste sha256sum of genesis.json here>
+# WEAK_SUBJECTIVITY_FINALIZED_HASH: <paste latest finalized block hash; refresh each release>

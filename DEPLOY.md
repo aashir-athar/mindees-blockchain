@@ -3,6 +3,9 @@
 Three ways to run a network, smallest to largest. All are **testnet-grade** — see the
 mainnet warning at the bottom.
 
+> **Want it always-on and reachable worldwide?** See **[GO-LIVE.md](GO-LIVE.md)** — a turnkey
+> runbook (systemd + TLS-proxied public RPC + seed list) using the scripts in [deploy/](deploy/).
+
 ## 1. Local testnet (one machine, one command)
 
 ```bash

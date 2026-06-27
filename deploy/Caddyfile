@@ -1,0 +1,32 @@
+# deploy/Caddyfile -- public Mindees JSON-RPC behind auto-TLS.
+# setup.sh substitutes {{DOMAIN}} (your DNS name) and {{TOKEN}} (MINDEES_RPC_TOKEN).
+# Why inject the token here: node.py decides loopback-vs-public ONCE at startup from --host
+# (node.py:278) and never inspects proxy headers (node.py:153-171). A proxy to 127.0.0.1:8645
+# with NO token would expose UNAUTHENTICATED submit_tx/receive_block to the world. So the node
+# runs WITH MINDEES_RPC_TOKEN set, and Caddy adds the Bearer header so legitimate proxied
+# requests are authorized. Reads (info/balance/...) are never gated, so they work without it.
+
+{{DOMAIN}} {
+	# Auto HTTPS via Let's Encrypt (Caddy manages the cert).
+
+	# Light abuse control: cap request body to the node's own 8 MB RPC limit.
+	request_body {
+		max_size 8MB
+	}
+
+	reverse_proxy 127.0.0.1:8645 {
+		# Inject the write-auth token on every proxied request. Harmless for reads
+		# (token only checked for submit_tx/receive_block, node.py:163), required for writes.
+		header_up Authorization "Bearer {{TOKEN}}"
+	}
+
+	encode gzip
+	log {
+		output file /var/log/caddy/mindees-rpc.log
+	}
+}
+
+# Optional hardening you can add later (not required to go live):
+#  - a separate :80 block that only does ACME + redirect (Caddy does this automatically),
+#  - Caddy `rate_limit` (needs the caddy-ratelimit plugin) since the node has NO rate limiting,
+#  - an IP allowlist with `@blocked` matchers if you want submit_tx restricted to known clients.
