@@ -476,6 +476,8 @@ def _cli(argv=None) -> None:
                    help="encrypted validator keystore ($MINDEES_PASSPHRASE) -- preferred over a raw secret")
     p.add_argument("--advertise", default=None, help="dialable host:port to announce (default: bind address)")
     p.add_argument("--peer", action="append", default=[], help="peer host:port (repeatable)")
+    p.add_argument("--checkpoint", default=None,
+                   help="weak-subjectivity checkpoint HASH:HEIGHT (reject conflicting history)")
     p.add_argument("--slot", type=float, default=2.0, help="seconds between production ticks")
     args = parser.parse_args(argv)
 
@@ -491,8 +493,12 @@ def _cli(argv=None) -> None:
         secret = decrypt_secret(load_keystore(args.validator_keystore), passphrase)
 
     validator = Wallet.from_secret(int(secret, 16)) if secret else None
-    node = P2PNode(NodeService(BlockStore(args.data), validator), args.host, args.port,
-                   advertise=args.advertise or "")
+    checkpoint = None
+    if args.checkpoint:
+        h, _, height = args.checkpoint.rpartition(":")
+        checkpoint = (h, int(height))
+    node = P2PNode(NodeService(BlockStore(args.data), validator, checkpoint=checkpoint),
+                   args.host, args.port, advertise=args.advertise or "")
     node.start()
     for spec in args.peer:
         host, _, port = spec.rpartition(":")

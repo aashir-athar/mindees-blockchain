@@ -41,12 +41,16 @@ class ConflictingFinalityError(ValidationError):
 
 class BlockTree:
     def __init__(self, allocations, initial_stakes=None, timestamp=0, vesting=None,
-                 unbonding_blocks=0, treasury_address=None, epoch=32):
+                 unbonding_blocks=0, treasury_address=None, epoch=32, checkpoint=None):
         self._genesis_args = (allocations, initial_stakes, timestamp, vesting,
                               unbonding_blocks, treasury_address, epoch)
         self.canonical = ProofOfStakeChain(*self._genesis_args)  # genesis-only chain
         self.genesis_hash = self.canonical.head.hash
         self.head_hash = self.genesis_hash
+        # Weak-subjectivity checkpoint: an operator-trusted (hash, height). Any block at that
+        # height with a different hash is rejected, so a long-range fork built from
+        # since-exited stake can never reproduce the checkpoint and become canonical.
+        self.ws_checkpoint = tuple(checkpoint) if checkpoint else None
         # Finality frontier: nothing at or below this is ever reorged. Rebuilt from the
         # canonical chain's committed FFG state, never trusted from memory across restart.
         self.finalized_hash = self.genesis_hash
@@ -99,6 +103,9 @@ class BlockTree:
             raise ValidationError("block conflicts with the finalized prefix")
         if new_height > self.finalized_height and not self._descends_from_finalized(ph):
             raise ValidationError("block does not descend from the finalized checkpoint")
+        # Weak-subjectivity: the block at the trusted checkpoint height must be the trusted hash.
+        if self.ws_checkpoint and new_height == self.ws_checkpoint[1] and bh != self.ws_checkpoint[0]:
+            raise ValidationError("block conflicts with the weak-subjectivity checkpoint")
 
         # Validate against the PARENT's state (not necessarily the current head).
         parent_chain = self.chain_at(ph)
@@ -202,6 +209,22 @@ def _demo() -> None:
     try:
         tree.add_block(orphan)
         raise AssertionError("orphan block should be refused")
+    except ValidationError:
+        pass
+
+    # Weak-subjectivity checkpoint: a node pinned to a trusted (hash, height) rejects any
+    # different block at that height -- a long-range fork can't reproduce it and can't take over.
+    g = BlockTree(allocations, initial_stakes, ts)
+    p = wallets[g.canonical.next_validator()]
+    trusted = seal_block(g.genesis_hash, 1, p, [], ts + 1)
+    g.add_block(trusted)
+    pinned = BlockTree(allocations, initial_stakes, ts, checkpoint=(trusted.hash, 1))
+    assert pinned.add_block(trusted) is True            # the trusted block at height 1 is fine
+    impostor = seal_block(pinned.genesis_hash, 1, p, [], ts + 777)  # different block, same height
+    assert impostor.hash != trusted.hash
+    try:
+        pinned.add_block(impostor)
+        raise AssertionError("a block conflicting with the checkpoint must be rejected")
     except ValidationError:
         pass
 

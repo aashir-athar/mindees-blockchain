@@ -40,12 +40,13 @@ class NodeService:
         store: BlockStore,
         validator_wallet: Optional[Wallet] = None,
         autoproduce: bool = False,
+        checkpoint=None,
     ) -> None:
         self.store = store
         # Fork choice + finality live in the block tree; the store is just durable bytes.
         # Rebuild the tree by replaying every persisted block (handles forks, unlike a
         # linear load), so finalized state is reconstructed deterministically on boot.
-        self.tree = BlockTree(*store.genesis_params())
+        self.tree = BlockTree(*store.genesis_params(), checkpoint=checkpoint)
         for block in store.iter_blocks():
             self.tree.add_block(block)
         self.mempool = Mempool()
@@ -243,6 +244,8 @@ def _cli(argv=None) -> None:
     p_serve.add_argument("--validator-secret", default=None, help="hex secret (prefer --validator-keystore)")
     p_serve.add_argument("--validator-keystore", default=None,
                          help="encrypted validator keystore ($MINDEES_PASSPHRASE)")
+    p_serve.add_argument("--checkpoint", default=None,
+                         help="weak-subjectivity checkpoint HASH:HEIGHT (reject conflicting history)")
     p_serve.add_argument("--autoproduce", action="store_true", help="mine a block on each tx")
 
     args = parser.parse_args(argv)
@@ -276,7 +279,11 @@ def _cli(argv=None) -> None:
         if not is_loopback and not token:
             raise SystemExit("refusing to serve a non-loopback RPC without $MINDEES_RPC_TOKEN")
 
-        service = NodeService(store, validator, autoproduce=args.autoproduce)
+        checkpoint = None
+        if args.checkpoint:
+            h, _, height = args.checkpoint.rpartition(":")
+            checkpoint = (h, int(height))
+        service = NodeService(store, validator, autoproduce=args.autoproduce, checkpoint=checkpoint)
         server = JSONRPCServer(service, args.host, args.port, token=token)
         info = service.info()
         print(f"{NAME} node serving on http://{args.host}:{args.port}/  height={info['height']}  "
