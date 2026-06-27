@@ -9,13 +9,14 @@ bytes to a node over JSON-RPC.
   python wallet.py keygen --out wallet.json         # encrypted keystore ($MINDEES_PASSPHRASE)
   python wallet.py address <SECRET_HEX>
   python wallet.py balance <ADDRESS>                [--rpc URL]
-  python wallet.py send <TO> <AMOUNT> [SECRET_HEX]  [--keystore F] [--fee F] [--rpc URL] [--mine]
-  python wallet.py stake <AMOUNT> [SECRET_HEX]      [--keystore F] [--fee F] [--rpc URL] [--mine]
-  python wallet.py unstake <AMOUNT> [SECRET_HEX]    [--keystore F] [--fee F] [--rpc URL] [--mine]
+  python wallet.py send <TO> <AMOUNT> [SECRET_HEX]  [--keystore F] [--fee F] [--rpc URL]
+  python wallet.py stake <AMOUNT> [SECRET_HEX]      [--keystore F] [--fee F] [--rpc URL]
+  python wallet.py unstake <AMOUNT> [SECRET_HEX]    [--keystore F] [--fee F] [--rpc URL]
 
 The secret may be passed inline or, better, via an encrypted --keystore (unlocked with
 $MINDEES_PASSPHRASE) so it never lands in shell history. Amounts are in whole MIND and may
 be decimal (e.g. 1.5); they convert to base units with Decimal so money never rounds wrong.
+Blocks are produced by the node (run it with --autoproduce to mine each submitted tx).
 
 Self-testing: run directly with no args ->  python wallet.py
 """
@@ -80,10 +81,6 @@ def _next_nonce(url: str, address: str) -> int:
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
-def _maybe_mine(url: str, mine: bool) -> None:
-    if mine:
-        block = rpc_call(url, "produce_block")
-        print(f"  mined block #{block['index']}")
 
 
 def main(argv=None) -> None:
@@ -114,7 +111,6 @@ def main(argv=None) -> None:
         p.add_argument("--fee", default="0")
         p.add_argument("--keystore", default=None, help="encrypted keystore ($MINDEES_PASSPHRASE)")
         p.add_argument("--rpc", default=DEFAULT_RPC)
-        p.add_argument("--mine", action="store_true", help="ask the node to mine immediately")
 
     args = parser.parse_args(argv)
 
@@ -165,7 +161,8 @@ def main(argv=None) -> None:
         tx = unstake_tx(wallet, amount, fee, nonce)
     res = rpc_call(args.rpc, "submit_tx", tx=encode_tx(tx))
     print(f"submitted {args.cmd}: txid={res['txid']}")
-    _maybe_mine(args.rpc, args.mine)
+    if res.get("mined"):
+        print(f"  included in block #{res['mined']['index']}")
 
 
 # --------------------------------------------------------------------------- #

@@ -79,18 +79,19 @@ pip install -r requirements.txt
 # 1. Create a genesis (750k market / 250k founder, treasury, unbonding period)
 python tokenomics.py init --data ./chaindata --founder-stake 50000 --unbonding-blocks 200
 
-# 2. Run a validator node (JSON-RPC API on http://127.0.0.1:8645/)
+# 2. Run a validator node (JSON-RPC API on http://127.0.0.1:8645/).
+#    --autoproduce mines a block as soon as a transaction is submitted.
 python node.py serve --data ./chaindata --validator-secret <FOUNDER_SECRET> --autoproduce
 
-# 3. Use the CLI wallet
+# 3. Use the CLI wallet (in another terminal)
 python wallet.py info
 python wallet.py balance <ADDRESS>
-python wallet.py send <TO_ADDRESS> 100 <SENDER_SECRET> --mine
+python wallet.py send <TO_ADDRESS> 100 <SENDER_SECRET>
 
 # Safer keys: an encrypted keystore instead of a raw secret on the command line
 export MINDEES_PASSPHRASE='correct horse battery staple'
 python wallet.py keygen --out founder.json
-python wallet.py send <TO_ADDRESS> 100 --keystore founder.json --mine
+python wallet.py send <TO_ADDRESS> 100 --keystore founder.json
 ```
 
 ## Run a network
