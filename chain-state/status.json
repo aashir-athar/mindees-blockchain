@@ -1,16 +1,16 @@
 {
   "network": "mindees",
   "ticker": "MIND",
-  "height": 12,
-  "head": "7d77d29718129f1b381db47e94f01d186fd9b8aeb13da685ed966a2e1e647a84",
-  "finalized_height": 4,
-  "finalized_hash": "408d296a3d82fdfa36af2a8bfa8d650706175f9f4e81148dfd7deac072a4683e",
+  "height": 18,
+  "head": "bb006e1480ae551e839d4113a7e483d9ea0262018c11630302015a871496234a",
+  "finalized_height": 12,
+  "finalized_hash": "7d77d29718129f1b381db47e94f01d186fd9b8aeb13da685ed966a2e1e647a84",
   "supply": 100000000000000,
   "max_supply": 100000000000000,
   "supply_ok": true,
   "validators": [
     "12s1K9RaX98vAa5pj3LY54FrsRpHu6Bbz3"
   ],
-  "updated_unix": 1782524190,
+  "updated_unix": 1782524228,
   "note": "Free GitHub-Actions-hosted single-producer testnet. Experimental, unaudited, valueless. Not a decentralised or value-bearing mainnet."
 }
