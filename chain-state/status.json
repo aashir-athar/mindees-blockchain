@@ -1,17 +1,17 @@
 {
   "network": "mindees",
   "ticker": "MIND",
-  "height": 5712,
-  "head": "6e70bf12706c7b596fc17034e73eccd289f7e78b2ca28d6231c384eceee2462c",
-  "finalized_height": 5704,
-  "finalized_hash": "67d7203ca338c702ba82ae303f2e872ed36bc4212468c90ce8c4db74f3319fbd",
+  "height": 5718,
+  "head": "d1dec883fc54840765a91aab3a1e8ac0de58a849bb0e29480098304456c29677",
+  "finalized_height": 5712,
+  "finalized_hash": "6e70bf12706c7b596fc17034e73eccd289f7e78b2ca28d6231c384eceee2462c",
   "supply": 100000000000000,
   "max_supply": 100000000000000,
   "supply_ok": true,
   "validators": [
     "12s1K9RaX98vAa5pj3LY54FrsRpHu6Bbz3"
   ],
-  "updated_unix": 1787170922,
+  "updated_unix": 1787172697,
   "phase": "mainnet-bootstrap",
   "note": "Mindees mainnet, bootstrap phase: live and self-finalizing, but produced by a single GitHub-Actions validator and UNAUDITED -- MIND has no guaranteed value. Independent validators and an independent security audit are required before relying on this network for anything of value."
 }
